@@ -6,6 +6,7 @@
 
 #include <lib/subghz/subghz_tx_rx_worker.h>
 #include "helpers/radio_device_loader.h"
+#include <stdint.h>
 
 #define _TAG "PicoPassRemote"
 
@@ -14,12 +15,16 @@ SubGhzTxRxWorker* subghz_txrx;
 
 RemoteCallback rx_callback;
 void* rx_callback_context;
+uint8_t* rx_buffer;
+size_t rx_buffer_len = 0;
 
-// Maximum length of a single message (in bytes)
-const uint8_t MESSAGE_MAX_LEN = 32;
+// Header and footer to identify messages for us
+const char* HEADER = "PP-R-NRM<";
+const uint8_t HEADER_SIZE = 9;
+const char* FOOTER = ">";
+const uint8_t FOOTER_SIZE = 1;
 
 // Don't use 433.920MHz as it's a harmonic frequency of the 13.56MHz signal used for the card
-// const uint32_t FREQUENCY = 433420000;
 const uint32_t FREQUENCY = 433560000;
 
 bool is_suppressing_charge = false;
@@ -27,17 +32,79 @@ bool is_suppressing_charge = false;
 void rx_event_callback(void* ctx) {
     UNUSED(ctx);
 
-    uint8_t buffer[MESSAGE_MAX_LEN];
+    // Read up to 32 bytes at a time
+    // This is just an arbitrary size, small enough to hopefully not cause
+    //  OOM issues, but large enough to be able to recieve a full message.
+    uint8_t buffer[32];
+    int len = (int)subghz_tx_rx_worker_read(subghz_txrx, buffer, sizeof(buffer));
+    if(len <= 0) {
+        return;
+    }
+    if (rx_buffer == NULL) {
+        rx_buffer = malloc(len);
+        rx_buffer_len = 0;
+    } else {
+        rx_buffer = realloc(rx_buffer, rx_buffer_len + len);
+    }
+    memcpy(rx_buffer + rx_buffer_len, buffer, len);
+    rx_buffer_len += len;
+    
+    // Search for the header in the buffer
+    for (size_t i = 0; i < rx_buffer_len - HEADER_SIZE; i++) {
+        if (memcmp(rx_buffer+i, HEADER, HEADER_SIZE) == 0) {
+            i += HEADER_SIZE;
+            uint8_t dataLength = rx_buffer[i++];
 
-    // The message must be for us, read the rest of it and pass it to the callback
-    int len = (int)subghz_tx_rx_worker_read(subghz_txrx, buffer, MESSAGE_MAX_LEN);
-    rx_callback(rx_callback_context, buffer, len);
+            if (dataLength < rx_buffer_len - i - FOOTER_SIZE) {
+                // Not enough for a full message, wait for more data
+                return;
+            }
+            // Found a header, now look for the footer
+            if (memcmp(rx_buffer+i+dataLength, FOOTER, FOOTER_SIZE) == 0) {
+                // Valid header and footer, send body to callback
+                uint8_t* data = malloc(dataLength);
+                memcpy(data, rx_buffer + i, dataLength);
+    
+                rx_callback(rx_callback_context, data, dataLength);
+                free(data);
+
+                int remainderIdx = i + dataLength + FOOTER_SIZE;
+                int remainder = rx_buffer_len - remainderIdx;
+                if (remainder > 0) {
+                    // Copy anything after the footer to the beginning of the buffer
+                    memmove(rx_buffer, rx_buffer + remainderIdx, remainder);
+                    rx_buffer = realloc(rx_buffer, rx_buffer_len);
+                    rx_buffer_len = remainder;
+                } else {
+                    // If the footer is the end of the buffer, just free it
+                    free(rx_buffer);
+                    rx_buffer = NULL;
+                    rx_buffer_len = 0;
+                }
+                break;
+            } else {
+                // Invalid footer, discard everything up to the header
+                memmove(rx_buffer, rx_buffer + i, rx_buffer_len - i);
+                rx_buffer = realloc(rx_buffer, rx_buffer_len - i);
+                rx_buffer_len = rx_buffer_len - i;
+            }
+
+            // Reset i to 0 to search for the next header
+            i = 0;
+        }
+    }
 }
 
 void remote_free() {
     if(is_suppressing_charge) {
         furi_hal_power_suppress_charge_exit();
         is_suppressing_charge = false;
+    }
+
+    if (rx_buffer != NULL) {
+        free(rx_buffer);
+        rx_buffer = NULL;
+        rx_buffer_len = 0;
     }
 
     if(subghz_txrx != NULL) {
@@ -95,7 +162,15 @@ bool remote_init() {
 }
 
 void remote_write(uint8_t* data, size_t len) {
-    while(!subghz_tx_rx_worker_write(subghz_txrx, data, len)) {
+    // Add header and footer
+    uint8_t full_len = len+HEADER_SIZE+FOOTER_SIZE+1;
+    uint8_t full_data[full_len];
+    memcpy(full_data, HEADER, HEADER_SIZE);
+    full_data[HEADER_SIZE] = len;
+    memcpy(full_data+HEADER_SIZE+1, data, len);
+    memcpy(full_data+HEADER_SIZE+1+len, FOOTER, FOOTER_SIZE);
+
+    while(!subghz_tx_rx_worker_write(subghz_txrx, full_data, full_len)) {
         // Wait a few milliseconds on failure before trying to send again.
         furi_delay_ms(7);
     }
