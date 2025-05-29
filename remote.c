@@ -54,7 +54,7 @@ void rx_event_callback(void* ctx) {
     FURI_LOG_D("PPNRM", "RX Here rx_buf_len=%d, len=%d!", rx_buffer_len, len);
 
     // Search for the header in the buffer
-    for (size_t i = 0; i < rx_buffer_len - HEADER_SIZE; i++) {
+    for (size_t i = 0; i < rx_buffer_len; i++) {
         FURI_LOG_D("PPNRM", "RX Buffer %02X (%c) @ %d", rx_buffer[i], rx_buffer[i], i);
     }
     for (size_t i = 0; i < rx_buffer_len - HEADER_SIZE; i++) {
