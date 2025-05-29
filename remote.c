@@ -30,6 +30,7 @@ const uint32_t FREQUENCY = 433560000;
 bool is_suppressing_charge = false;
 
 void rx_event_callback(void* ctx) {
+    FURI_LOG_D("PPNRM", "RX saw smth!");
     UNUSED(ctx);
 
     // Read up to 32 bytes at a time
@@ -38,6 +39,7 @@ void rx_event_callback(void* ctx) {
     uint8_t buffer[32];
     int len = (int)subghz_tx_rx_worker_read(subghz_txrx, buffer, sizeof(buffer));
     if(len <= 0) {
+        FURI_LOG_D("PPNRM", "RX len<0!");
         return;
     }
     if (rx_buffer == NULL) {
@@ -49,22 +51,33 @@ void rx_event_callback(void* ctx) {
     memcpy(rx_buffer + rx_buffer_len, buffer, len);
     rx_buffer_len += len;
     
+    FURI_LOG_D("PPNRM", "RX Here rx_buf_len=%d, len=%d!", rx_buffer_len, len);
+
     // Search for the header in the buffer
     for (size_t i = 0; i < rx_buffer_len - HEADER_SIZE; i++) {
+        FURI_LOG_D("PPNRM", "RX Buffer %02X (%c) @ %d", rx_buffer[i], rx_buffer[i], i);
+    }
+    for (size_t i = 0; i < rx_buffer_len - HEADER_SIZE; i++) {
         if (memcmp(rx_buffer+i, HEADER, HEADER_SIZE) == 0) {
+            FURI_LOG_D("PPNRM", "Found header @ %d", i);
             i += HEADER_SIZE;
             uint8_t dataLength = rx_buffer[i++];
+            FURI_LOG_D("PPNRM", "dataLength=%d > rx_buffer_len=%d - i=%d - FOOTER_SIZE=%d", dataLength, rx_buffer_len, i, FOOTER_SIZE);
 
-            if (dataLength < rx_buffer_len - i - FOOTER_SIZE) {
+            if (dataLength > rx_buffer_len - i - FOOTER_SIZE) {
                 // Not enough for a full message, wait for more data
+                FURI_LOG_D("PPNRM", "Not enough bytes for footer");
                 return;
             }
             // Found a header, now look for the footer
             if (memcmp(rx_buffer+i+dataLength, FOOTER, FOOTER_SIZE) == 0) {
+                FURI_LOG_D("PPNRM", "Found footer");
                 // Valid header and footer, send body to callback
                 uint8_t* data = malloc(dataLength);
                 memcpy(data, rx_buffer + i, dataLength);
-    
+                for (size_t j = 0; j < dataLength; j++) {
+                    FURI_LOG_D("PPNRM", "RX Final output data %02X (%c) @ %d", data[j], data[j], j);
+                }
                 rx_callback(rx_callback_context, data, dataLength);
                 free(data);
 
@@ -83,6 +96,7 @@ void rx_event_callback(void* ctx) {
                 }
                 break;
             } else {
+                FURI_LOG_D("PPNRM", "No footer found");
                 // Invalid footer, discard everything up to the header
                 memmove(rx_buffer, rx_buffer + i, rx_buffer_len - i);
                 rx_buffer = realloc(rx_buffer, rx_buffer_len - i);
@@ -170,6 +184,10 @@ void remote_write(uint8_t* data, size_t len) {
     memcpy(full_data+HEADER_SIZE+1, data, len);
     memcpy(full_data+HEADER_SIZE+1+len, FOOTER, FOOTER_SIZE);
 
+    for (int i = 0; i < full_len; i++) {
+        FURI_LOG_D("PPNRM", "TX Buffer %02X (%c) @ %d", full_data[i], full_data[i], i);
+    }
+ 
     while(!subghz_tx_rx_worker_write(subghz_txrx, full_data, full_len)) {
         // Wait a few milliseconds on failure before trying to send again.
         furi_delay_ms(7);
