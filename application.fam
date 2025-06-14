@@ -1,0 +1,55 @@
+# For details & more options, see documentation/AppManifests.md in firmware repo
+
+App(
+    appid="test_subghz_plugin",  # Must be unique
+    name="App test_subghz_plugin",  # Displayed in menus
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="test_subghz_plugin",
+    stack_size=2 * 1024,
+    fap_category="Examples",
+    # Optional values
+    # fap_version="0.1",
+    fap_icon="test_subghz_plugin.png",  # 10x10 1-bit PNG
+    # fap_description="A simple app",
+    # fap_author="J. Doe",
+    # fap_weburl="https://github.com/user/test_subghz",
+    fap_icon_assets="images",  # Image assets to compile for this application
+    sources=["*.c*", "!plugin_remote"],
+)
+
+App(
+    appid="_plugin_remote",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="plugin_remote_ep",
+    requires=["test_subghz_plugin"],
+    sources=["plugin_remote/remote.c"],
+    fal_embedded=True,
+)
+
+
+App(
+    appid="layer_header_footer",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="layer_ep",
+    requires=["test_subghz_plugin"],
+    sources=["plugin_remote/layers/header_footer.c"],
+    fal_embedded=True,
+)
+
+App(
+    appid="layer_checksum",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="layer_ep",
+    requires=["test_subghz_plugin"],
+    sources=["plugin_remote/layers/checksum.c"],
+    fal_embedded=True,
+)
+
+App(
+    appid="layer_slip",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="layer_ep",
+    requires=["test_subghz_plugin"],
+    sources=["plugin_remote/layers/slip.c"],
+    fal_embedded=True,
+)
