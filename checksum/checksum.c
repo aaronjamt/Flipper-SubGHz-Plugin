@@ -72,7 +72,6 @@ DataLayer *init() {
     memset(layer, 0, sizeof(DataLayer));
     layer->send = &send;
     layer->recv = &recv;
-    layer->storage = (void*)0x1337c0de;
 
     return layer;
 }
