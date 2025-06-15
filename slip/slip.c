@@ -132,7 +132,7 @@ int recv(void *storage, Buffer input, Buffer* output) {
             output->data[output_index++] = input.data[input_index++];
         }
     }
-    
+
     // Shrink output buffer to actual size
     if (output_index < output->size) {
         output->data = realloc(output->data, output_index);

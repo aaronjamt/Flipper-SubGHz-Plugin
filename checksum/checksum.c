@@ -8,6 +8,14 @@
 
 int send(void *storage, Buffer input, Buffer* output) {
     UNUSED(storage);
+
+    if (input.size == 0) {
+        // Nothing to send, return 0 to indicate no data processed
+        output->size = 0;
+        output->data = NULL;
+        return 0;
+    }
+
     // Output buffer will be 2 bytes larger than input buffer
     output->size = input.size + 2;
     output->data = (uint8_t*)malloc(output->size);

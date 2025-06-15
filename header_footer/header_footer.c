@@ -22,6 +22,13 @@ typedef struct {
 int send(void *storage, Buffer input, Buffer* output) {
     HeaderFooterConfig *config = (HeaderFooterConfig*)storage;
 
+    if (input.size == 0) {
+        // Nothing to send, return 0 to indicate no data processed
+        output->size = 0;
+        output->data = NULL;
+        return 0;
+    }
+
     // Calculate output buffer size (add header, footer, length byte)
     output->size = input.size+config->header_size+config->footer_size+1;
     output->data = (uint8_t*)malloc(output->size);
@@ -83,7 +90,7 @@ int recv(void *storage, Buffer input, Buffer* output) {
 
 void configure(void *storage, char *header, size_t header_size, char *footer, size_t footer_size) {
     HeaderFooterConfig *config = (HeaderFooterConfig*)storage;
-    
+
     config->header = malloc(header_size);
     memcpy(config->header, header, header_size);
     config->header_size = header_size;
