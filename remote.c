@@ -33,19 +33,18 @@ void free_buffer(Buffer* buffer) {
     buffer->size = 0;
 }
 
-void append_buffer(Buffer buffer, const uint8_t* data, size_t size) {
+void append_buffer(Buffer *buffer, const uint8_t* data, size_t size) {
     if (data == NULL || size == 0) return;
 
-    if (buffer.data == NULL) {
-        buffer.data = malloc(size);
-        memcpy(buffer.data, data, size);
-        buffer.size = size;
+    if (buffer->data == NULL) {
+        buffer->data = malloc(size);
+        memcpy(buffer->data, data, size);
+        buffer->size = size;
     } else {
-        buffer.data = realloc(buffer.data, buffer.size + size);
-        memcpy(buffer.data + buffer.size, data, size);
-        buffer.size += size;
+        buffer->data = realloc(buffer->data, buffer->size + size);
+        memcpy(buffer->data + buffer->size, data, size);
+        buffer->size += size;
     }
-    buffer.size = 0;
 }
 
 void append_layer(DataLayer *layer) {
@@ -138,7 +137,7 @@ void rx_event_callback(void* ctx) {
     do {
         uint8_t buffer[32];
         len = (int)subghz_tx_rx_worker_read(subghz_txrx, buffer, sizeof(buffer));
-        append_buffer(payload, buffer, len);
+        append_buffer(&payload, buffer, len);
     } while (len);
 
     // Pass the data through the layers in reverse order
@@ -227,16 +226,7 @@ void remote_write(uint8_t* data, size_t len) {
     furi_delay_ms(100);
 }
 
-void remote_free() {
-    if(is_suppressing_charge) {
-        furi_hal_power_suppress_charge_exit();
-        is_suppressing_charge = false;
-    }
-
-    if (manager != NULL) {
-        plugin_manager_free(manager);
-    }
-
+void remote_stop() {
     if(subghz_txrx != NULL) {
         if(subghz_tx_rx_worker_is_running(subghz_txrx)) {
             subghz_tx_rx_worker_stop(subghz_txrx);
@@ -249,6 +239,10 @@ void remote_free() {
 }
 
 bool remote_start(uint32_t frequency) {
+    remote_stop();
+    subghz_txrx = subghz_tx_rx_worker_alloc();
+    subghz_devices_init();
+
     // All the SubGhz CLI apps disable charging so this plugin does too
     if(!is_suppressing_charge) {
         furi_hal_power_suppress_charge_enter();
@@ -266,10 +260,6 @@ bool remote_start(uint32_t frequency) {
         return false;
     }
 
-    if(subghz_tx_rx_worker_is_running(subghz_txrx)) {
-        subghz_tx_rx_worker_stop(subghz_txrx);
-    }
-
     furi_assert(device);
     if(subghz_tx_rx_worker_start(subghz_txrx, device, frequency)) {
         subghz_tx_rx_worker_set_callback_have_read(subghz_txrx, rx_event_callback, subghz_txrx);
@@ -285,12 +275,21 @@ bool remote_start(uint32_t frequency) {
 }
 
 bool remote_init() {
-    remote_free();
-
-    subghz_txrx = subghz_tx_rx_worker_alloc();
-    subghz_devices_init();
-
     // Prepare the plugin manager for loading layers
     manager = plugin_manager_alloc(LAYER_APP_ID, LAYER_API_VERSION, firmware_api_interface);
+
     return true;
+}
+
+void remote_free() {
+    remote_stop();
+
+    if(is_suppressing_charge) {
+        furi_hal_power_suppress_charge_exit();
+        is_suppressing_charge = false;
+    }
+
+    if (manager != NULL) {
+        plugin_manager_free(manager);
+    }
 }
