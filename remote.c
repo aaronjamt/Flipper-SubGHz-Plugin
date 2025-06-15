@@ -257,7 +257,19 @@ void remote_free() {
     }
 }
 
-bool remote_set_freq(uint32_t frequency) {
+bool remote_start(uint32_t frequency) {
+    // All the SubGhz CLI apps disable charging so this plugin does too
+    if(!is_suppressing_charge) {
+        furi_hal_power_suppress_charge_enter();
+        is_suppressing_charge = true;
+    }
+
+    // Request an external CC1101 antenna (will fall back to internal if unavailable)
+    device = radio_device_loader_set(NULL, SubGhzRadioDeviceTypeExternalCC1101);
+
+    subghz_devices_reset(device);
+    subghz_devices_idle(device);
+
     if(!furi_hal_region_is_frequency_allowed(frequency)) {
         FURI_LOG_E(TAG, "Frequency not allowed: %ld.", frequency);
         return false;
@@ -286,27 +298,6 @@ bool remote_init() {
 
     subghz_txrx = subghz_tx_rx_worker_alloc();
     subghz_devices_init();
-
-    // All the SubGhz CLI apps disable charging so this plugin does too
-    if(!is_suppressing_charge) {
-        furi_hal_power_suppress_charge_enter();
-        is_suppressing_charge = true;
-    }
-
-    // Request an external CC1101 antenna (will fall back to internal if unavailable)
-    device = radio_device_loader_set(NULL, SubGhzRadioDeviceTypeExternalCC1101);
-
-    subghz_devices_reset(device);
-    subghz_devices_idle(device);
-
-    // Set up using the default frequency, the main app can change it later
-    if (!remote_set_freq(REMOTE_PRIMARY_DEFAULT_FREQUENCY)) {
-        // Fall back to alternate frequency if the default is not allowed
-        if (!remote_set_freq(REMOTE_ALTERNATE_DEFAULT_FREQUENCY)) {
-            FURI_LOG_E(TAG, "Failed to initialize Sub-GHz Remote plugin.");
-            return false;
-        }
-    }
 
     // Prepare the plugin manager for loading layers
     manager = plugin_manager_alloc(LAYER_APP_ID, LAYER_API_VERSION, firmware_api_interface);

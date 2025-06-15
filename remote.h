@@ -8,14 +8,14 @@ void remote_set_rx_cb(RemoteCallback callback, void* context);
 void remote_write(uint8_t* data, size_t len);
 
 bool remote_init();
-bool remote_set_freq(uint32_t frequency);
+bool remote_start(uint32_t frequency);
 void remote_free();
 
 /* Actual implementation of app<>plugin interface */
 static const PluginRemote plugin_remote = {
     .init = &remote_init,
-    .set_freq = &remote_set_freq,
     .load_layer = &remote_load_layer,
+    .start = &remote_start,
 
     .set_rx_cb = &remote_set_rx_cb,
     .write = &remote_write,
