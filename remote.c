@@ -33,6 +33,8 @@ DataLayer* layers_head = NULL;
 DataLayer* layers_tail = NULL;
 
 void free_buffer(Buffer* buffer) {
+    furi_check(buffer);
+    
     if (buffer->data != NULL) {
         free(buffer->data);
         buffer->data = NULL;
@@ -56,6 +58,8 @@ void append_buffer(Buffer buffer, const uint8_t* data, size_t size) {
 }
 
 void append_layer(DataLayer *layer) {
+    furi_check(layer);
+
     if (layers_tail == NULL) {
         if (layers_head == NULL) {
             // This is (currently) the only layer
@@ -83,6 +87,9 @@ void append_layer(DataLayer *layer) {
 }
 
 bool remote_load_layer(const char *name, void **storage) {
+    furi_check(name);
+    furi_check(manager);
+
     // Concatinate the base plugins directory with the provided layer name
     const char *base_path = APP_ASSETS_PATH("plugins/");
     char *_path = malloc(strlen(base_path) + strlen(name) + 1);
@@ -113,6 +120,8 @@ bool remote_load_layer(const char *name, void **storage) {
 }
 
 void remote_set_rx_cb(RemoteCallback callback, void* context) {
+    furi_check(callback);
+
     rx_callback = callback;
     rx_callback_context = context;
 }
@@ -183,12 +192,18 @@ void rx_event_callback(void* ctx) {
 }
 
 void remote_write(uint8_t* data, size_t len) {
-    // Process layers
+    // Allow sending 0 bytes, which will just trigger each layer's `send()` method
+    //   without adding any new data.
     Buffer payload = {
-        .data = malloc(len),
+        .data = NULL,
         .size = len
     };
-    memcpy(payload.data, data, len);
+
+    if (len != 0) {
+        furi_check(data);
+        payload.data = malloc(len);
+        memcpy(payload.data, data, len);
+    }
 
     // Pass the data through the layers
     DataLayer *layer = layers_head;
