@@ -11,15 +11,6 @@
 
 #define TAG "SubGHzRemotePlugin"
 
-// 433.920MHz is the main frequency, as it is the most common and
-//   is available in nearly all the regions the Flipper supports.
-#define REMOTE_PRIMARY_DEFAULT_FREQUENCY 433920000
-
-// 922.000MHz is an alternate frequency that is in the 915MHz ISM
-//    band (for ITU Region 1), and is in the allowed frequency
-//    range for the Flipper in all unknown regions.
-#define REMOTE_ALTERNATE_DEFAULT_FREQUENCY 922000000
-
 const SubGhzDevice* device;
 SubGhzTxRxWorker* subghz_txrx;
 bool is_suppressing_charge = false;
