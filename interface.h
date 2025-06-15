@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#include "layer.h"
+#include "layers/layer.h"
 
 #define REMOTE_PLUGIN_APP_ID "subghz_remote"
 #define REMOTE_PLUGIN_API_VERSION 1
