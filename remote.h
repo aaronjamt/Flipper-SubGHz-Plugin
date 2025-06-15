@@ -2,23 +2,25 @@
 
 #include "interface.h"
 
-#define TAG "SubGHzRemotePlugin"
-
-bool load_layer(const char *name, void **storage);
+bool remote_load_layer(const char *name, void **storage);
 
 void remote_set_rx_cb(RemoteCallback callback, void* context);
 void remote_write(uint8_t* data, size_t len);
 
 bool remote_init();
+bool remote_set_freq(uint32_t frequency);
 void remote_free();
 
 /* Actual implementation of app<>plugin interface */
 static const PluginRemote plugin_remote = {
     .init = &remote_init,
-    .free = &remote_free,
-    .write = &remote_write,
+    .set_freq = &remote_set_freq,
+    .load_layer = &remote_load_layer,
+
     .set_rx_cb = &remote_set_rx_cb,
-    .load_layer = &load_layer,
+    .write = &remote_write,
+
+    .free = &remote_free,
 };
 
 /* Plugin descriptor to comply with basic plugin specification */

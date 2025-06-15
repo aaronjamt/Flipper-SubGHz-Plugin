@@ -1,11 +1,28 @@
 #include <flipper_application/plugins/plugin_manager.h>
 #include <loader/firmware_api/firmware_api.h>
+#include <lib/subghz/subghz_tx_rx_worker.h>
 
 #include <string.h>
 #include <stdlib.h>
 
+#include "helpers/radio_device_loader.h"
 #include "remote.h"
 #include "layer.h"
+
+#define TAG "SubGHzRemotePlugin"
+
+// 433.920MHz is the main frequency, as it is the most common and
+//   is available in nearly all the regions the Flipper supports.
+#define REMOTE_PRIMARY_DEFAULT_FREQUENCY 433920000
+
+// 922.000MHz is an alternate frequency that is in the 915MHz ISM
+//    band (for ITU Region 1), and is in the allowed frequency
+//    range for the Flipper in all unknown regions.
+#define REMOTE_ALTERNATE_DEFAULT_FREQUENCY 922000000
+
+const SubGhzDevice* device;
+SubGhzTxRxWorker* subghz_txrx;
+bool is_suppressing_charge = false;
 
 PluginManager* manager;
 
@@ -23,6 +40,21 @@ void free_buffer(Buffer* buffer) {
     buffer->size = 0;
 }
 
+void append_buffer(Buffer buffer, const uint8_t* data, size_t size) {
+    if (data == NULL || size == 0) return;
+
+    if (buffer.data == NULL) {
+        buffer.data = malloc(size);
+        memcpy(buffer.data, data, size);
+        buffer.size = size;
+    } else {
+        buffer.data = realloc(buffer.data, buffer.size + size);
+        memcpy(buffer.data + buffer.size, data, size);
+        buffer.size += size;
+    }
+    buffer.size = 0;
+}
+
 void append_layer(DataLayer *layer) {
     if (layers_tail == NULL) {
         if (layers_head == NULL) {
@@ -38,7 +70,7 @@ void append_layer(DataLayer *layer) {
             layers_tail = layers_head;
             while (layers_tail->next_layer != NULL)
                 layers_tail = layers_tail->next_layer;
-            
+
             // Fall through to append below
         }
     }
@@ -50,7 +82,7 @@ void append_layer(DataLayer *layer) {
     layers_tail = layer;
 }
 
-bool load_layer(const char *name, void **storage) {
+bool remote_load_layer(const char *name, void **storage) {
     // Concatinate the base plugins directory with the provided layer name
     const char *base_path = APP_ASSETS_PATH("plugins/");
     char *_path = malloc(strlen(base_path) + strlen(name) + 1);
@@ -64,7 +96,7 @@ bool load_layer(const char *name, void **storage) {
             // Fetch and call entry point's init() method to create the DataLayer*
             DataLayerEntryPoint *ep = (DataLayerEntryPoint*)plugin_manager_get_ep(manager, plugin_count);
             DataLayer *layer = ep->init();
-            
+
             // Add the DataLayer* to the list of layers
             append_layer(layer);
 
@@ -85,7 +117,25 @@ void remote_set_rx_cb(RemoteCallback callback, void* context) {
     rx_callback_context = context;
 }
 
-void rx_event_callback(Buffer payload) {
+void rx_event_callback(void* ctx) {
+    UNUSED(ctx);
+
+    FURI_LOG_D("PPNRM", "RX saw smth!");
+
+    Buffer payload = {
+        .data = NULL,
+        .size = 0
+    };
+
+    // Read data from Sub-GHz until there's no more available
+    int len;
+    do {
+        uint8_t buffer[32];
+        len = (int)subghz_tx_rx_worker_read(subghz_txrx, buffer, sizeof(buffer));
+        append_buffer(payload, buffer, len);
+    } while (len);
+
+    // Pass the data through the layers in reverse order
     DataLayer *layer = layers_tail;
     while (layer) {
         // Each layer contains a `recv_buffer` to store data that hasn't
@@ -125,10 +175,11 @@ void rx_event_callback(Buffer payload) {
         return;
     }
 
-    if (rx_callback == NULL)
+    if (rx_callback == NULL) {
         FURI_LOG_W(TAG, "No RX callback set, dropping data!\n");
-    else
+    } else {
         rx_callback(rx_callback_context, payload.data, payload.size);
+    }
 }
 
 void remote_write(uint8_t* data, size_t len) {
@@ -139,6 +190,7 @@ void remote_write(uint8_t* data, size_t len) {
     };
     memcpy(payload.data, data, len);
 
+    // Pass the data through the layers
     DataLayer *layer = layers_head;
     while (layer) {
         Buffer output = {};
@@ -154,15 +206,89 @@ void remote_write(uint8_t* data, size_t len) {
         layer = layer->next_layer;
     }
 
-    // TODO: Send data to Sub-GHz worker
-    rx_event_callback(payload);
+    // Transmit final payload
+    while(!subghz_tx_rx_worker_write(subghz_txrx, payload.data, payload.size)) {
+        // Wait a few milliseconds on failure before trying to send again.
+        furi_delay_ms(7);
+    }
+    // Wait 10ms between each transmission to make sure they aren't received clumped together
+    furi_delay_ms(100);
 }
 
 void remote_free() {
-    plugin_manager_free(manager);
+    if(is_suppressing_charge) {
+        furi_hal_power_suppress_charge_exit();
+        is_suppressing_charge = false;
+    }
+
+    if (manager != NULL) {
+        plugin_manager_free(manager);
+    }
+
+    if(subghz_txrx != NULL) {
+        if(subghz_tx_rx_worker_is_running(subghz_txrx)) {
+            subghz_tx_rx_worker_stop(subghz_txrx);
+        }
+        subghz_tx_rx_worker_free(subghz_txrx);
+        subghz_txrx = NULL;
+
+        subghz_devices_deinit();
+    }
+}
+
+bool remote_set_freq(uint32_t frequency) {
+    if(!furi_hal_region_is_frequency_allowed(frequency)) {
+        FURI_LOG_E(TAG, "Frequency not allowed: %ld.", frequency);
+        return false;
+    }
+
+    if(subghz_tx_rx_worker_is_running(subghz_txrx)) {
+        subghz_tx_rx_worker_stop(subghz_txrx);
+    }
+
+    furi_assert(device);
+    if(subghz_tx_rx_worker_start(subghz_txrx, device, frequency)) {
+        subghz_tx_rx_worker_set_callback_have_read(subghz_txrx, rx_event_callback, subghz_txrx);
+
+        return true;
+    } else {
+        if(subghz_tx_rx_worker_is_running(subghz_txrx)) {
+            subghz_tx_rx_worker_stop(subghz_txrx);
+        }
+        FURI_LOG_E(TAG, "Failed to start SubGhz TX/RX worker.");
+        return false;
+    }
 }
 
 bool remote_init() {
+    if(subghz_txrx != NULL) {
+        remote_free();
+    }
+    subghz_txrx = subghz_tx_rx_worker_alloc();
+    subghz_devices_init();
+
+    // All the SubGhz CLI apps disable charging so this plugin does too
+    if(!is_suppressing_charge) {
+        furi_hal_power_suppress_charge_enter();
+        is_suppressing_charge = true;
+    }
+
+    // Request an external CC1101 antenna (will fall back to internal if unavailable)
+    device = radio_device_loader_set(NULL, SubGhzRadioDeviceTypeExternalCC1101);
+
+    subghz_devices_reset(device);
+    subghz_devices_idle(device);
+
+    // Set up using the default frequency, the main app can change it later
+    if (!remote_set_freq(REMOTE_PRIMARY_DEFAULT_FREQUENCY)) {
+        // Fall back to alternate frequency if the default is not allowed
+        if (!remote_set_freq(REMOTE_ALTERNATE_DEFAULT_FREQUENCY)) {
+            FURI_LOG_E(TAG, "Failed to initialize Sub-GHz Remote plugin.");
+            return false;
+        }
+    }
+
+    // Prepare the plugin manager for loading layers
     manager = plugin_manager_alloc(LAYER_APP_ID, LAYER_API_VERSION, firmware_api_interface);
     return true;
 }
