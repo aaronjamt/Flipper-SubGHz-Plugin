@@ -87,9 +87,15 @@ void append_layer(DataLayer *layer) {
 }
 
 bool remote_load_layer(const char *name, void **storage) {
-    furi_check(name);
-    furi_check(manager);
-
+    if (manager == NULL) {
+        FURI_LOG_E(TAG, "Plugin was not initialized");
+        return false;
+    }
+    if (name == NULL) {
+        FURI_LOG_E(TAG, "Layer name cannot be NULL");
+        return false;
+    }
+    
     // Concatinate the base plugins directory with the provided layer name
     const char *base_path = APP_ASSETS_PATH("plugins/");
     char *_path = malloc(strlen(base_path) + strlen(name) + 1);
@@ -276,9 +282,8 @@ bool remote_set_freq(uint32_t frequency) {
 }
 
 bool remote_init() {
-    if(subghz_txrx != NULL) {
-        remote_free();
-    }
+    remote_free();
+
     subghz_txrx = subghz_tx_rx_worker_alloc();
     subghz_devices_init();
 
