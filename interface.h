@@ -25,5 +25,6 @@ typedef struct{
     void (*set_rx_cb)(RemoteCallback process_line, void* context);
     void (*write)(uint8_t* data, size_t len);
 
+    void (*stop)();
     void (*free)();
 } PluginRemote;

@@ -9,6 +9,7 @@ void remote_write(uint8_t* data, size_t len);
 
 bool remote_init();
 bool remote_start(uint32_t frequency);
+void remote_stop();
 void remote_free();
 
 /* Actual implementation of app<>plugin interface */
@@ -20,6 +21,7 @@ static const PluginRemote plugin_remote = {
     .set_rx_cb = &remote_set_rx_cb,
     .write = &remote_write,
 
+    .stop = &remote_stop,
     .free = &remote_free,
 };
 
