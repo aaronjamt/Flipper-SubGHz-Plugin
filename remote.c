@@ -209,17 +209,43 @@ void remote_write(uint8_t* data, size_t len) {
     // Pass the data through the layers
     DataLayer *layer = layers_head;
     while (layer) {
-        Buffer output = {};
-        size_t processed = layer->send(layer->storage, payload, &output);
+        // Each layer contains a `send_buffer` to store data that hasn't
+        // yet been processed. Append the new payload to this buffer.
+        layer->send_buffer.data = realloc(layer->send_buffer.data, layer->send_buffer.size + payload.size);
+        memcpy(layer->send_buffer.data + layer->send_buffer.size, payload.data, payload.size);
+        layer->send_buffer.size += payload.size;
+
+        // Free the payload data as it has been copied into the layer's buffer
+        free_buffer(&payload);
+
+        // Now attempt to process the updated `send_buffer`.
+        size_t processed = layer->send(layer->storage, layer->send_buffer, &payload);
+
         if (processed == 0) {
             // If the layer didn't process any data, skip it
             layer = layer->next_layer;
             continue;
         }
 
-        free(payload.data);
-        payload = output;
+        // We're going to remove the processed data, so update the buffer's size
+        layer->send_buffer.size -= processed;
+
+        // If the buffer is now empty, free it
+        if (layer->send_buffer.size == 0) {
+            free_buffer(&layer->send_buffer);
+        }
+        // Otherwise, move the unprocessed data to the beginning of the buffer
+        else {
+            memmove(layer->send_buffer.data, layer->send_buffer.data + processed, layer->send_buffer.size);
+            layer->send_buffer.data = realloc(layer->send_buffer.data, layer->send_buffer.size);
+        }
+
         layer = layer->next_layer;
+    }
+
+    if (payload.size == 0) {
+        FURI_LOG_I(TAG, "No data to send to Sub-GHz worker!\n");
+        return;
     }
 
     // Transmit final payload
@@ -227,8 +253,6 @@ void remote_write(uint8_t* data, size_t len) {
         // Wait a few milliseconds on failure before trying to send again.
         furi_delay_ms(7);
     }
-    // Wait 10ms between each transmission to make sure they aren't received clumped together
-    furi_delay_ms(100);
 }
 
 void remote_stop() {
