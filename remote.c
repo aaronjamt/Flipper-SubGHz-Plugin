@@ -284,6 +284,13 @@ bool remote_init() {
 void remote_free() {
     remote_stop();
 
+    while (layers_head) {
+        free(layers_head->storage);
+        layers_head = layers_head->next_layer;
+    }
+    layers_head = NULL;
+    layers_tail = NULL;
+
     if(is_suppressing_charge) {
         furi_hal_power_suppress_charge_exit();
         is_suppressing_charge = false;
