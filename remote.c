@@ -188,6 +188,11 @@ void rx_event_callback(void* ctx) {
 }
 
 void remote_write(uint8_t* data, size_t len) {
+    if (!subghz_txrx) {
+        FURI_LOG_E(TAG, "SubGhz TX/RX worker is not running!");
+        return;
+    }
+
     // Allow sending 0 bytes, which will just trigger each layer's `send()` method
     //   without adding any new data.
     Buffer payload = {
