@@ -1,4 +1,3 @@
-// #include "header_footer.h"
 #include "../layer.h"
 
 #include <flipper_application/flipper_application.h>
