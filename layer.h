@@ -38,3 +38,6 @@ typedef struct DataLayer {
 typedef struct {
     DataLayer *(*init)();
 } DataLayerEntryPoint;
+
+void buffer_free(Buffer* buffer);
+void buffer_append(Buffer *buffer, const uint8_t* data, size_t size);
