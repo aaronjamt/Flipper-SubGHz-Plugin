@@ -13,6 +13,9 @@
 
 const SubGhzDevice* device;
 SubGhzTxRxWorker* subghz_txrx;
+Buffer subghz_tx_buffer;
+FuriThread *tx_worker_thread;
+FuriMutex *tx_worker_mutex;
 bool is_suppressing_charge = false;
 
 PluginManager* manager;
@@ -23,29 +26,12 @@ void* rx_callback_context;
 DataLayer* layers_head = NULL;
 DataLayer* layers_tail = NULL;
 
-void free_buffer(Buffer* buffer) {
-    furi_check(buffer);
-    
-    if (buffer->data != NULL) {
-        free(buffer->data);
-        buffer->data = NULL;
-    }
-    buffer->size = 0;
-}
-
-void append_buffer(Buffer *buffer, const uint8_t* data, size_t size) {
-    if (data == NULL || size == 0) return;
-
-    if (buffer->data == NULL) {
-        buffer->data = malloc(size);
-        memcpy(buffer->data, data, size);
-        buffer->size = size;
-    } else {
-        buffer->data = realloc(buffer->data, buffer->size + size);
-        memcpy(buffer->data + buffer->size, data, size);
-        buffer->size += size;
-    }
-}
+typedef enum {
+    WorkerEventStop  = 1 << 1,
+    WorkerEventData  = 1 << 2,
+    WorkerEventFlush = 1 << 3,
+    WorkerEventTimer = 1 << 4,
+} WorkerEventFlags;
 
 void append_layer(DataLayer *layer) {
     furi_check(layer);
@@ -125,8 +111,6 @@ void remote_set_rx_cb(RemoteCallback callback, void* context) {
 void rx_event_callback(void* ctx) {
     UNUSED(ctx);
 
-    FURI_LOG_D("PPNRM", "RX saw smth!");
-
     Buffer payload = {
         .data = NULL,
         .size = 0
@@ -137,40 +121,38 @@ void rx_event_callback(void* ctx) {
     do {
         uint8_t buffer[32];
         len = (int)subghz_tx_rx_worker_read(subghz_txrx, buffer, sizeof(buffer));
-        append_buffer(&payload, buffer, len);
+        buffer_append(&payload, buffer, len);
     } while (len);
 
     // Pass the data through the layers in reverse order
     DataLayer *layer = layers_tail;
     while (layer) {
-        // Each layer contains a `recv_buffer` to store data that hasn't
-        // yet been processed. Append the new payload to this buffer.
-        layer->recv_buffer.data = realloc(layer->recv_buffer.data, layer->recv_buffer.size + payload.size);
-        memcpy(layer->recv_buffer.data + layer->recv_buffer.size, payload.data, payload.size);
-        layer->recv_buffer.size += payload.size;
+        // Add any data from the payload buffer to the layer's receive buffer
+        if (payload.size) {
+            buffer_append(&layer->recv_buffer, payload.data, payload.size);
+            buffer_free(&payload);
+        }
 
-        // Free the payload data as it has been copied into the layer's buffer
-        free_buffer(&payload);
-
-        // Now attempt to process the updated `recv_buffer`.
         int processed = layer->recv(layer->storage, layer->recv_buffer, &payload);
 
-        // If the layer fails, try again once we get more data
-        if (processed == 0) return;
-        else {
-            // We're going to remove the processed data, so update the buffer's size
-            layer->recv_buffer.size -= processed;
-
-            // If the buffer is now empty, free it
-            if (layer->recv_buffer.size == 0) {
-                free_buffer(&layer->recv_buffer);
-            }
-            // Otherwise, move the unprocessed data to the beginning of the buffer
-            else {
-                memmove(layer->recv_buffer.data, layer->recv_buffer.data + processed, layer->recv_buffer.size);
-                layer->recv_buffer.data = realloc(layer->recv_buffer.data, layer->recv_buffer.size);
-            }
+        if (processed == 0) {
+            // If the layer didn't process any data, skip updating the receive buffer
+            layer = layer->prev_layer;
+            continue;
         }
+
+        // We're going to remove the processed data, so update the buffer's size
+        layer->recv_buffer.size -= processed;
+
+        if (layer->recv_buffer.size == 0) {
+            // If the buffer is now empty, free it
+            buffer_free(&layer->recv_buffer);
+        } else {
+            // Otherwise, move the unprocessed data to the beginning of the buffer
+            memmove(layer->recv_buffer.data, layer->recv_buffer.data + processed, layer->recv_buffer.size);
+            layer->recv_buffer.data = realloc(layer->recv_buffer.data, layer->recv_buffer.size);
+        }
+
         // Move to the previous layer (so we reverse the order of operations from sending)
         layer = layer->prev_layer;
     }
@@ -187,75 +169,120 @@ void rx_event_callback(void* ctx) {
     }
 }
 
-void remote_write(uint8_t* data, size_t len) {
+void remote_write(uint8_t *data, size_t size) {
+    if (!tx_worker_mutex || !tx_worker_thread) {
+        FURI_LOG_E(TAG, "Sub-GHz TX/RX worker is not running!");
+        furi_check(false);
+    }
+
+    if (furi_mutex_acquire(tx_worker_mutex, FuriWaitForever) != FuriStatusOk) {
+        FURI_LOG_E(TAG, "Failed to write data: could not lock mutex!");
+        furi_check(false);
+    }
+
+    buffer_append(&subghz_tx_buffer, data, size);
+    furi_mutex_release(tx_worker_mutex);
+
+    furi_thread_flags_set(furi_thread_get_id(tx_worker_thread), WorkerEventData);
+}
+
+static int32_t tx_worker(void* context) {
+    UNUSED(context);
+
+    tx_worker_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+
     if (!subghz_txrx) {
-        FURI_LOG_E(TAG, "SubGhz TX/RX worker is not running!");
-        return;
+        FURI_LOG_E(TAG, "Sub-GHz TX/RX worker is not running!");
+        return 0;
     }
 
-    // Allow sending 0 bytes, which will just trigger each layer's `send()` method
-    //   without adding any new data.
-    Buffer payload = {
-        .data = NULL,
-        .size = len
-    };
+    while (1) {
+        uint32_t events =
+            furi_thread_flags_wait(WorkerEventStop | WorkerEventData, FuriFlagWaitAny | FuriFlagNoClear, 100);
+        furi_check((events & FuriFlagError) == 0 || events == FuriFlagErrorTimeout);
 
-    if (len != 0) {
-        furi_check(data);
-        payload.data = malloc(len);
-        memcpy(payload.data, data, len);
-    }
+        if(events & WorkerEventStop) break;
 
-    // Pass the data through the layers
-    DataLayer *layer = layers_head;
-    while (layer) {
-        // Each layer contains a `send_buffer` to store data that hasn't
-        // yet been processed. Append the new payload to this buffer.
-        layer->send_buffer.data = realloc(layer->send_buffer.data, layer->send_buffer.size + payload.size);
-        memcpy(layer->send_buffer.data + layer->send_buffer.size, payload.data, payload.size);
-        layer->send_buffer.size += payload.size;
+        Buffer payload = {
+            .data = NULL,
+            .size = 0
+        };
 
-        // Free the payload data as it has been copied into the layer's buffer
-        free_buffer(&payload);
+        // Only read in new data if we can acquire the mutex
+        if ((events & WorkerEventData) && (furi_mutex_acquire(tx_worker_mutex, 25) == FuriStatusOk)) {
+            furi_thread_flags_clear(WorkerEventData);
+            payload.size = subghz_tx_buffer.size;
 
-        // Now attempt to process the updated `send_buffer`.
-        size_t processed = layer->send(layer->storage, layer->send_buffer, &payload);
+            if (payload.size) {
+                furi_check(subghz_tx_buffer.data);
+                payload.data = malloc(payload.size);
+                memcpy(payload.data, subghz_tx_buffer.data, payload.size);
+            }
 
-        if (processed == 0) {
-            // If the layer didn't process any data, skip it
+            buffer_free(&subghz_tx_buffer);
+            furi_mutex_free(tx_worker_mutex);
+        }
+        
+        // Pass the data through the layers
+        DataLayer *layer = layers_head;
+        while (layer) {
+            // Add any data from the payload buffer to the layer's send buffer
+            if (payload.size) {
+                buffer_append(&layer->send_buffer, payload.data, payload.size);
+                buffer_free(&payload);
+            }
+
+            size_t processed = layer->send(layer->storage, layer->send_buffer, &payload);
+
+            if (processed == 0) {
+                // If the layer didn't process any data, skip updating the send buffer
+                layer = layer->next_layer;
+                continue;
+            }
+
+            // We're going to remove the processed data, so update the buffer's size
+            layer->send_buffer.size -= processed;
+
+            // If the buffer is now empty, free it
+            if (layer->send_buffer.size == 0) {
+                buffer_free(&layer->send_buffer);
+            }
+            // Otherwise, move the unprocessed data to the beginning of the buffer
+            else {
+                memmove(layer->send_buffer.data, layer->send_buffer.data + processed, layer->send_buffer.size);
+                layer->send_buffer.data = realloc(layer->send_buffer.data, layer->send_buffer.size);
+            }
+
             layer = layer->next_layer;
-            continue;
         }
 
-        // We're going to remove the processed data, so update the buffer's size
-        layer->send_buffer.size -= processed;
-
-        // If the buffer is now empty, free it
-        if (layer->send_buffer.size == 0) {
-            free_buffer(&layer->send_buffer);
-        }
-        // Otherwise, move the unprocessed data to the beginning of the buffer
-        else {
-            memmove(layer->send_buffer.data, layer->send_buffer.data + processed, layer->send_buffer.size);
-            layer->send_buffer.data = realloc(layer->send_buffer.data, layer->send_buffer.size);
+        if (payload.size) {
+            // Transmit final payload
+            while(!subghz_tx_rx_worker_write(subghz_txrx, payload.data, payload.size)) {
+                // Wait a few milliseconds on failure before trying to send again
+                furi_delay_ms(7);
+            }
         }
 
-        layer = layer->next_layer;
+        if (events & WorkerEventFlush) {
+            // TODO: Figure out how to flush the SubGHz TX/RX worker's buffer
+            furi_thread_flags_clear(WorkerEventFlush);
+        }
     }
 
-    if (payload.size == 0) {
-        FURI_LOG_I(TAG, "No data to send to Sub-GHz worker!\n");
-        return;
-    }
+    furi_mutex_free(tx_worker_mutex);
 
-    // Transmit final payload
-    while(!subghz_tx_rx_worker_write(subghz_txrx, payload.data, payload.size)) {
-        // Wait a few milliseconds on failure before trying to send again.
-        furi_delay_ms(7);
-    }
+    return 0;
 }
 
 void remote_stop() {
+    if (tx_worker_thread != NULL) {
+        furi_thread_flags_set(furi_thread_get_id(tx_worker_thread), WorkerEventStop);
+        furi_thread_join(tx_worker_thread);
+        furi_thread_free(tx_worker_thread);
+        tx_worker_thread = NULL;
+    }
+
     if(subghz_txrx != NULL) {
         if(subghz_tx_rx_worker_is_running(subghz_txrx)) {
             subghz_tx_rx_worker_stop(subghz_txrx);
@@ -290,15 +317,19 @@ bool remote_start(uint32_t frequency) {
     }
 
     furi_assert(device);
+    // Start TX/RX worker threads
     if(subghz_tx_rx_worker_start(subghz_txrx, device, frequency)) {
         subghz_tx_rx_worker_set_callback_have_read(subghz_txrx, rx_event_callback, subghz_txrx);
+
+        tx_worker_thread = furi_thread_alloc_ex("SubGHzPluginTXWorker", 1024, tx_worker, NULL);
+        furi_thread_start(tx_worker_thread);
 
         return true;
     } else {
         if(subghz_tx_rx_worker_is_running(subghz_txrx)) {
             subghz_tx_rx_worker_stop(subghz_txrx);
         }
-        FURI_LOG_E(TAG, "Failed to start SubGhz TX/RX worker.");
+        FURI_LOG_E(TAG, "Failed to start Sub-GHz TX/RX worker.");
         return false;
     }
 }
