@@ -30,7 +30,7 @@ typedef enum {
     WorkerEventStop  = 1 << 1,
     WorkerEventData  = 1 << 2,
     WorkerEventFlush = 1 << 3,
-    WorkerEventTimer = 1 << 4,
+    WorkerEventAgain = 1 << 4,
 } WorkerEventFlags;
 
 void append_layer(DataLayer *layer) {
@@ -201,13 +201,12 @@ static int32_t tx_worker(void* context) {
 
     while (1) {
         uint32_t events =
-            furi_thread_flags_wait(WorkerEventStop | WorkerEventData, FuriFlagWaitAny | FuriFlagNoClear, 100);
-        furi_check((events & FuriFlagError) == 0 || events == FuriFlagErrorTimeout);
+            furi_thread_flags_wait(WorkerEventStop | WorkerEventData | WorkerEventFlush | WorkerEventAgain, FuriFlagWaitAny, 1000);
+        
+        if (events == FuriFlagErrorTimeout) events = 0;
+        furi_check((events & FuriFlagError) == 0);
 
-        if(events == WorkerEventStop) {
-            furi_thread_flags_clear(WorkerEventStop);
-            break;
-        }
+        if (events == WorkerEventStop) break;
 
         Buffer payload = {
             .data = NULL,
@@ -272,7 +271,6 @@ static int32_t tx_worker(void* context) {
 
         if (events & WorkerEventFlush) {
             // TODO: Figure out how to flush the SubGHz TX/RX worker's buffer
-            furi_thread_flags_clear(WorkerEventFlush);
         }
     }
 
