@@ -326,7 +326,7 @@ bool remote_start(uint32_t frequency) {
     if(subghz_tx_rx_worker_start(subghz_txrx, device, frequency)) {
         subghz_tx_rx_worker_set_callback_have_read(subghz_txrx, rx_event_callback, subghz_txrx);
 
-        tx_worker_thread = furi_thread_alloc_ex("SubGHzPluginTXWorker", 1024, tx_worker, NULL);
+        tx_worker_thread = furi_thread_alloc_ex("SubGHzPluginTXWorker", 1280, tx_worker, NULL);
         furi_thread_start(tx_worker_thread);
 
         return true;
