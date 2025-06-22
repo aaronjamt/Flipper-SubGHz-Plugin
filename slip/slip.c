@@ -24,6 +24,13 @@ typedef struct {
 int send(void *storage, Buffer input, Buffer* output) {
     SLIPConfig *config = (SLIPConfig*)storage;
 
+    if (input.size == 0) {
+        // Nothing to send, return 0 to indicate no data processed
+        output->size = 0;
+        output->data = NULL;
+        return 0;
+    }
+    
     // The output might be up to twice the size of the input, plus
     //   2 bytes for the header and footer.
     output->size = input.size * 2 + 2;
