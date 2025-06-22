@@ -189,6 +189,9 @@ void remote_write(uint8_t *data, size_t size) {
 static int32_t tx_worker(void* context) {
     UNUSED(context);
 
+    if (tx_worker_mutex != NULL) {
+        furi_mutex_free(tx_worker_mutex);
+    }
     tx_worker_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
 
     if (!subghz_txrx) {
@@ -201,7 +204,10 @@ static int32_t tx_worker(void* context) {
             furi_thread_flags_wait(WorkerEventStop | WorkerEventData, FuriFlagWaitAny | FuriFlagNoClear, 100);
         furi_check((events & FuriFlagError) == 0 || events == FuriFlagErrorTimeout);
 
-        if(events & WorkerEventStop) break;
+        if(events == WorkerEventStop) {
+            furi_thread_flags_clear(WorkerEventStop);
+            break;
+        }
 
         Buffer payload = {
             .data = NULL,
@@ -220,7 +226,7 @@ static int32_t tx_worker(void* context) {
             }
 
             buffer_free(&subghz_tx_buffer);
-            furi_mutex_free(tx_worker_mutex);
+            furi_mutex_release(tx_worker_mutex);
         }
         
         // Pass the data through the layers
@@ -271,6 +277,7 @@ static int32_t tx_worker(void* context) {
     }
 
     furi_mutex_free(tx_worker_mutex);
+    tx_worker_mutex = NULL;
 
     return 0;
 }
