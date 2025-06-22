@@ -26,3 +26,9 @@ void buffer_append(Buffer *buffer, const uint8_t* data, size_t size) {
         buffer->size += size;
     }
 }
+
+void transmit_thread_process_again() {
+    // Must match the value in remote.c
+    uint32_t WorkerEventAgain = 1 << 4;
+    furi_thread_flags_set(furi_thread_get_id(furi_thread_get_current()), WorkerEventAgain);
+}

@@ -41,3 +41,7 @@ typedef struct {
 
 void buffer_free(Buffer* buffer);
 void buffer_append(Buffer *buffer, const uint8_t* data, size_t size);
+
+// Call from any layer to cause the worker thread to run again immediately
+//   after finishing the current loop
+void transmit_thread_process_again();
